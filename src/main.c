@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "entropy.h"
+#include "fileinspect.h"
+
 static void print_usage(const char *prog) {
     fprintf(stderr, "Usage: %s <path-to-file>\n", prog);
     fprintf(stderr, "       %s --help\n", prog);
@@ -98,11 +101,16 @@ int main(int argc, char *argv[]) {
     printf("Size: %ld bytes\n", size);
 
     if (size == 0) {
-        printf("Warning: file is empty; no content to inspect.\n");
+        printf("[!] Empty file (0 bytes) - nothing to inspect.\n");
         return 0;
     }
 
-    printf("Read %ld bytes into memory successfully.\n", size);
+    double entropy = compute_entropy(buf, size);
+    printf("Entropy: %.4f bits/byte\n", entropy);
+    if (entropy > ENTROPY_HIGH_THRESHOLD) {
+        printf("[!] High entropy (> %.1f) - possibly packed, compressed, or encrypted.\n",
+               ENTROPY_HIGH_THRESHOLD);
+    }
 
     free(buf);
     return 0;
