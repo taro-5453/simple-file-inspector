@@ -1,0 +1,6 @@
+/bak
+fileinspect
+fileinspect.dSYM/
+.DS_Store
+*.o
+*.dSYM/
