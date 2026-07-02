@@ -128,6 +128,25 @@ int main(int argc, char *argv[]) {
         printf("      treat these as a hint to look closer, not proof of an embedded file.\n");
     }
 
+    // Extension vs content (Does the file name match what the bytes say?)
+    const char *ext = file_extension(path);
+    filetype_t expected = filetype_from_extension(ext);
+    if (expected != FT_UNKNOWN) {
+        if (type == expected) {
+            printf("Extension: .%s (matches content)\n", ext);
+        } else if (type != FT_UNKNOWN) {
+            printf("[!] Extension mismatch: file is named .%s but content is %s.\n",
+                   ext, filetype_name(type));
+        } else {
+            printf("[!] Extension mismatch: file is named .%s but no %s signature was found.\n",
+                   ext, filetype_name(expected));
+        }
+    } else if (ext != NULL) {
+        printf("Extension: .%s (no signature to expect)\n", ext);
+    } else {
+        printf("Extension: none\n");
+    }
+
     // Shannon entropy score
     double entropy = compute_entropy(buf, size);
     printf("Entropy: %.4f bits/byte\n", entropy);

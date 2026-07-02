@@ -85,6 +85,84 @@ void scan_embedded_signatures(const unsigned char *buf, long size, embedded_scan
     }
 }
 
+const char *file_extension(const char *path) {
+    if (path == NULL) {
+        return NULL;
+    }
+
+    /* Find the start of the final path component (after the last '/'), so a
+     * dot in a directory name like "my.dir/file" is not mistaken for one. */
+    const char *base = path;
+    for (const char *p = path; *p != '\0'; p++) {
+        if (*p == '/') {
+            base = p + 1;
+        }
+    }
+
+    /* Find the last '.' within the basename. */
+    const char *dot = NULL;
+    for (const char *p = base; *p != '\0'; p++) {
+        if (*p == '.') {
+            dot = p;
+        }
+    }
+
+    /* No dot at all; a leading dot (dotfile like ".bashrc"); or a trailing
+     * dot ("name.") -> treat as having no usable extension. */
+    if (dot == NULL || dot == base || *(dot + 1) == '\0') {
+        return NULL;
+    }
+    return dot + 1;
+}
+
+filetype_t filetype_from_extension(const char *ext) {
+    if (ext == NULL) {
+        return FT_UNKNOWN;
+    }
+
+    /* Copy into a small lowercase buffer for case-insensitive comparison.
+     * Any extension longer than this buffer is not one we recognize. */
+    char low[16];
+    size_t i = 0;
+    for (; ext[i] != '\0' && i < sizeof(low) - 1; i++) {
+        char c = ext[i];
+        if (c >= 'A' && c <= 'Z') {
+            c = (char)(c - 'A' + 'a');
+        }
+        low[i] = c;
+    }
+    low[i] = '\0';
+    if (ext[i] != '\0') {
+        return FT_UNKNOWN;  /* extension was too long to be one of ours */
+    }
+
+    /* Extensions whose name claims a type that has recognizable magic bytes.
+     * Plain-text extensions (.txt, .csv, .c, ...) are intentionally absent:
+     * they have no signature, so detect_filetype returns FT_UNKNOWN for them
+     * and there is nothing to mismatch against. */
+    static const struct {
+        const char *ext;
+        filetype_t type;
+    } MAP[] = {
+        {"exe", FT_PE}, {"dll", FT_PE}, {"sys", FT_PE}, {"scr", FT_PE},
+        {"so", FT_ELF},
+        {"pdf", FT_PDF},
+        {"zip", FT_ZIP}, {"jar", FT_ZIP}, {"apk", FT_ZIP},
+        {"docx", FT_ZIP}, {"xlsx", FT_ZIP}, {"pptx", FT_ZIP},
+        {"jpg", FT_JPEG}, {"jpeg", FT_JPEG},
+        {"png", FT_PNG},
+        {"gz", FT_GZIP}, {"tgz", FT_GZIP},
+    };
+
+    size_t n = sizeof(MAP) / sizeof(MAP[0]);
+    for (size_t k = 0; k < n; k++) {
+        if (strcmp(low, MAP[k].ext) == 0) {
+            return MAP[k].type;
+        }
+    }
+    return FT_UNKNOWN;
+}
+
 const char *filetype_name(filetype_t type) {
     switch (type) {
         case FT_PE:   return "PE executable (MZ)";

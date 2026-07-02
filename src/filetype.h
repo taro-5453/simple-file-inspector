@@ -39,4 +39,16 @@ const char *filetype_name(filetype_t type);
  * short 2-byte signatures (MZ, GZIP) can match by chance, so treat with care. */
 void scan_embedded_signatures(const unsigned char *buf, long size, embedded_scan_t *out);
 
+/* Returns a pointer to the extension (the characters after the last '.' of
+ * the final path component), or NULL if the file has no extension. Correctly
+ * ignores dots in directory names and treats dotfiles like ".bashrc" and
+ * names ending in '.' as having no extension. The returned pointer is into
+ * `path`; do not free it. */
+const char *file_extension(const char *path);
+
+/* Maps a file extension (without the leading dot, case-insensitive) to the
+ * file type its name claims to be, or FT_UNKNOWN for extensions we do not
+ * map (including plain-text types that have no magic bytes). */
+filetype_t filetype_from_extension(const char *ext);
+
 #endif
