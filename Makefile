@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS = -std=c11 -Wall -Wextra -g
+CFLAGS = -std=c11 -Wall -Wextra -g -Iinclude
 LDLIBS = -lm
 
 SRCS = src/main.c src/entropy.c src/filetype.c src/strings.c src/ioc.c
