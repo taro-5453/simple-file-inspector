@@ -5,6 +5,7 @@
 
 #include "entropy.h"
 #include "fileinspect.h"
+#include "filetype.h"
 
 static void print_usage(const char *prog) {
     fprintf(stderr, "Usage: %s <path-to-file>\n", prog);
@@ -79,6 +80,7 @@ static int read_file(const char *path, unsigned char **out_buf, long *out_size) 
 }
 
 int main(int argc, char *argv[]) {
+    // Validation
     if (argc != 2) {
         print_usage(argv[0]);
         return 1;
@@ -89,6 +91,7 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+    // Load file into the buffer
     const char *path = argv[1];
     unsigned char *buf = NULL;
     long size = 0;
@@ -105,6 +108,27 @@ int main(int argc, char *argv[]) {
         return 0;
     }
 
+    // Detect file type and embedded
+    filetype_t type = detect_filetype(buf, size);
+    printf("Detected type: %s\n", filetype_name(type));
+
+    embedded_scan_t emb;
+    scan_embedded_signatures(buf, size, &emb);
+    if (emb.total > 0) {
+        printf("[!] Embedded signatures found past the header (%ld total):\n", emb.total);
+        for (int t = 1; t < FT_COUNT; t++) {
+            if (emb.per_type[t].count > 0) {
+                printf("      - %s x%ld (first at offset %ld)\n",
+                       filetype_name((filetype_t)t),
+                       emb.per_type[t].count,
+                       emb.per_type[t].first_offset);
+            }
+        }
+        printf("      Note: short 2-byte signatures (MZ, GZIP) can appear by chance;\n");
+        printf("      treat these as a hint to look closer, not proof of an embedded file.\n");
+    }
+
+    // Shannon entropy score
     double entropy = compute_entropy(buf, size);
     printf("Entropy: %.4f bits/byte\n", entropy);
     if (entropy > ENTROPY_HIGH_THRESHOLD) {
