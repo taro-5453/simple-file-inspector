@@ -1,7 +1,11 @@
+/* For isatty/fileno with -std=c11 on Linux. */
+#define _POSIX_C_SOURCE 200809L
+
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #include "entropy.h"
 #include "fileinspect.h"
@@ -10,6 +14,34 @@
 #include "ioc.h"
 #include "sha256.h"
 #include "strings.h"
+
+#define C_RESET  "\033[0m"
+#define C_RED    "\033[31;1m"
+#define C_YELLOW "\033[33m"
+#define C_GREEN  "\033[32m"
+
+/* Colors are used only when stdout is a terminal, so piped/redirected
+ * output stays plain text. */
+static int use_color;
+
+static const char *color(const char *code) {
+    return use_color ? code : "";
+}
+
+/* The "[!]" warning marker, yellow on a terminal. */
+static const char *bang(void) {
+    return use_color ? C_YELLOW "[!]" C_RESET : "[!]";
+}
+
+/* Prints a section header padded with dashes to a fixed width, e.g.
+ * "---- Identity ------------------...". */
+static void print_rule(const char *title) {
+    int len = printf("---- %s ", title);
+    while (len++ < 60) {
+        putchar('-');
+    }
+    putchar('\n');
+}
 
 static void print_usage(const char *prog) {
     fprintf(stderr, "Usage: %s [--hashlist <list-file>] <path-to-file>\n", prog);
@@ -66,7 +98,6 @@ static int read_file(const char *path, unsigned char **out_buf, long *out_size) 
     // Move file pointer back to the beginning
     rewind(fp);
 
-    // 
     unsigned char *buf = NULL;
     if (size > 0) {
         buf = malloc((size_t)size);
@@ -89,6 +120,17 @@ static int read_file(const char *path, unsigned char **out_buf, long *out_size) 
     *out_buf = buf;
     *out_size = size;
     return 0;
+}
+
+static void print_ascii_art() {
+    printf("                                                                                      __\n");
+    printf("  ___ _            _       ___ _ _       ___                      _                -=(o '.\n");
+    printf(" / __(_)_ __  _ __| |___  | __(_) |___  |_ _|_ _  ____ __  ___ __| |_ ___ _ _         '.-.\\ \n");
+    printf(" \\__ \\ | '  \\| '_ \\ / -_) | _|| | / -_)  | || ' \\(_-< '_ \\/ -_) _|  _/ _ \\ '_|        /|  \\\\ \n");
+    printf(" |___/_|_|_|_| .__/_\\___| |_| |_|_\\___| |___|_||_/__/ .__/\\___\\__|\\__\\___/_|          '|  || \n");
+    printf("             |_|                                    |_|                                _\\_):,_ \n");
+    printf("\n\n");
+
 }
 
 int main(int argc, char *argv[]) {
@@ -125,6 +167,8 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    use_color = isatty(fileno(stdout));
+
     // Load file into the buffer
     unsigned char *buf = NULL;
     long size = 0;
@@ -132,9 +176,11 @@ int main(int argc, char *argv[]) {
     if (read_file(path, &buf, &size) != 0) {
         return 1;
     }
+    int is_empty = (size == 0);
 
-    printf("File: %s\n", path);
-    printf("Size: %ld bytes\n", size);
+    print_ascii_art();
+
+    // ---- Run every check first; all printing happens afterwards. ----
 
     // SHA-256 fingerprint (+ optional lookup in a local known-bad list).
     // Purely offline: the hash identifies the content; renaming the file
@@ -143,7 +189,6 @@ int main(int argc, char *argv[]) {
     char hex[SHA256_HEX_LEN + 1];
     sha256(buf, (size_t)size, digest);
     sha256_hex(digest, hex);
-    printf("SHA-256: %s\n", hex);
 
     int hash_match = 0;
     if (hashlist_path != NULL) {
@@ -152,54 +197,16 @@ int main(int argc, char *argv[]) {
             free(buf);
             return 1;
         }
-        if (r == 1) {
-            printf("[!] SHA-256 found in known-bad hash list (%s).\n", hashlist_path);
-            hash_match = 1;
-        } else {
-            printf("SHA-256 not present in local hash list.\n");
-        }
+        hash_match = (r == 1);
     }
 
-    if (size == 0) {
-        printf("[!] Empty file (0 bytes) - nothing to inspect.\n");
-        printf("\n--- Risk summary (weight of evidence) ---\n");
-        int empty_score = 1;
-        printf("  [+1] Empty file: 0 bytes where content was expected\n");
-        if (hash_match) {
-            printf("  [+2] SHA-256 present in known-bad hash list\n");
-            empty_score += 2;
-        }
-        printf("Verdict: %s (score %d)\n",
-               empty_score >= 2 ? "SUSPICIOUS" : "WORTH A LOOK", empty_score);
-        return 0;
-    }
-
-    // Signals collected along the way for the final risk summary
-    int mismatch_strong = 0;  /* named one known type, content is another */
-    int mismatch_soft = 0;    /* named a known type, but its signature is absent */
-    int high_entropy = 0;
-    long emb_reliable = 0;    /* embedded hits from signatures >= 3 bytes */
-    long emb_weak = 0;        /* embedded hits from 2-byte signatures (MZ/GZIP) */
-
-    // Detect file type and embedded
+    // Detect file type and embedded signatures
     filetype_t type = detect_filetype(buf, size);
-    printf("Detected type: %s\n", filetype_name(type));
 
     embedded_scan_t emb;
     scan_embedded_signatures(buf, size, &emb);
-    if (emb.total > 0) {
-        printf("[!] Embedded signatures found past the header (%ld total):\n", emb.total);
-        for (int t = 1; t < FT_COUNT; t++) {
-            if (emb.per_type[t].count > 0) {
-                printf("      - %s x%ld (first at offset %ld)\n",
-                       filetype_name((filetype_t)t),
-                       emb.per_type[t].count,
-                       emb.per_type[t].first_offset);
-            }
-        }
-        printf("      Note: short 2-byte signatures (MZ, GZIP) can appear by chance;\n");
-        printf("      treat these as a hint to look closer, not proof of an embedded file.\n");
-    }
+    long emb_reliable = 0;  /* embedded hits from signatures >= 3 bytes */
+    long emb_weak = 0;      /* embedded hits from 2-byte signatures (MZ/GZIP) */
     for (int t = 1; t < FT_COUNT; t++) {
         if (emb.per_type[t].count > 0) {
             if (filetype_sig_len((filetype_t)t) >= 3) {
@@ -213,32 +220,19 @@ int main(int argc, char *argv[]) {
     // Extension vs content (Does the file name match what the bytes say?)
     const char *ext = file_extension(path);
     filetype_t expected = filetype_from_extension(ext);
-    if (expected != FT_UNKNOWN) {
-        if (type == expected) {
-            printf("Extension: .%s (matches content)\n", ext);
-        } else if (type != FT_UNKNOWN) {
-            printf("[!] Extension mismatch: file is named .%s but content is %s.\n",
-                   ext, filetype_name(type));
+    int mismatch_strong = 0;  /* named one known type, content is another */
+    int mismatch_soft = 0;    /* named a known type, but its signature is absent */
+    if (expected != FT_UNKNOWN && type != expected) {
+        if (type != FT_UNKNOWN) {
             mismatch_strong = 1;
         } else {
-            printf("[!] Extension mismatch: file is named .%s but no %s signature was found.\n",
-                   ext, filetype_name(expected));
             mismatch_soft = 1;
         }
-    } else if (ext != NULL) {
-        printf("Extension: .%s (no signature to expect)\n", ext);
-    } else {
-        printf("Extension: none\n");
     }
 
     // Shannon entropy score
     double entropy = compute_entropy(buf, size);
-    printf("Entropy: %.4f bits/byte\n", entropy);
-    if (entropy > ENTROPY_HIGH_THRESHOLD) {
-        printf("[!] High entropy (> %.1f) - possibly packed, compressed, or encrypted.\n",
-               ENTROPY_HIGH_THRESHOLD);
-        high_entropy = 1;
-    }
+    int high_entropy = (!is_empty && entropy > ENTROPY_HIGH_THRESHOLD);
 
     // Printable strings (runs of ASCII >= STRING_MIN_LEN chars)
     string_list_t strings;
@@ -246,20 +240,6 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Error: out of memory extracting strings from '%s'\n", path);
         free(buf);
         return 1;
-    }
-    printf("Strings: %zu printable string(s) of length >= %d\n",
-           strings.count, STRING_MIN_LEN);
-    size_t shown = strings.count;
-    if (shown > STRING_PREVIEW_MAX) {
-        shown = STRING_PREVIEW_MAX;
-    }
-    for (size_t i = 0; i < shown; i++) {
-        printf("      [offset %6ld] %s\n", strings.items[i].offset,
-               strings.items[i].text);
-    }
-    if (strings.count > shown) {
-        printf("      ... and %zu more (showing first %d)\n",
-               strings.count - shown, STRING_PREVIEW_MAX);
     }
 
     // IOC scan (IPv4 addresses and http/https URLs inside the strings)
@@ -278,28 +258,118 @@ int main(int argc, char *argv[]) {
             n_url++;
         }
     }
-    printf("IOCs: %zu IPv4 address(es), %zu URL(s)\n", n_ip, n_url);
-    size_t ioc_shown = iocs.count;
-    if (ioc_shown > IOC_PREVIEW_MAX) {
-        ioc_shown = IOC_PREVIEW_MAX;
+
+    // ---- Report ----
+
+    print_rule("Identity");
+    printf("%-14s %s\n", "Path", path);
+    if (is_empty) {
+        printf("%-14s 0 bytes %s empty\n", "Size", bang());
+    } else {
+        printf("%-14s %ld bytes\n", "Size", size);
     }
-    for (size_t i = 0; i < ioc_shown; i++) {
-        printf("      [offset %6ld] %-4s %s\n", iocs.items[i].offset,
-               ioc_kind_name(iocs.items[i].kind), iocs.items[i].text);
+    printf("%-14s %s\n", "SHA-256", hex);
+    if (hashlist_path != NULL) {
+        if (hash_match) {
+            printf("%-14s %s %sMATCH - known-bad hash%s (%s)\n", "Hash list",
+                   bang(), color(C_RED), color(C_RESET), hashlist_path);
+        } else {
+            printf("%-14s no match (%s)\n", "Hash list", hashlist_path);
+        }
     }
-    if (iocs.count > ioc_shown) {
-        printf("      ... and %zu more (showing first %d)\n",
-               iocs.count - ioc_shown, IOC_PREVIEW_MAX);
+    printf("%-14s %s\n", "Type (magic)", filetype_name(type));
+    if (expected != FT_UNKNOWN && type == expected) {
+        printf("%-14s .%s (matches content)\n", "Extension", ext);
+    } else if (mismatch_strong) {
+        printf("%-14s .%s %s content is %s\n", "Extension", ext, bang(),
+               filetype_name(type));
+    } else if (mismatch_soft) {
+        printf("%-14s .%s %s no %s signature present\n", "Extension", ext,
+               bang(), filetype_name(expected));
+    } else if (ext != NULL) {
+        printf("%-14s .%s\n", "Extension", ext);
+    } else {
+        printf("%-14s none\n", "Extension");
+    }
+
+    printf("\n");
+    print_rule("Content signals");
+    if (is_empty) {
+        printf("%-14s n/a (empty file)\n", "Entropy");
+    } else if (high_entropy) {
+        printf("%-14s %.4f bits/byte %s high (> %.1f) - possibly packed or encrypted\n",
+               "Entropy", entropy, bang(), ENTROPY_HIGH_THRESHOLD);
+    } else {
+        printf("%-14s %.4f bits/byte (normal range)\n", "Entropy", entropy);
+    }
+    if (emb.total > 0) {
+        printf("%-14s %s %ld hit(s) past the header\n", "Embedded sigs",
+               bang(), emb.total);
+        for (int t = 1; t < FT_COUNT; t++) {
+            if (emb.per_type[t].count > 0) {
+                printf("               - %-29s x%-4ld first at offset %ld\n",
+                       filetype_name((filetype_t)t),
+                       emb.per_type[t].count,
+                       emb.per_type[t].first_offset);
+            }
+        }
+        if (emb_weak > 0) {
+            printf("               note: 2-byte signatures (MZ, GZIP) can match by\n");
+            printf("               chance - a hint to look closer, not proof\n");
+        }
+    } else {
+        printf("%-14s none past the header\n", "Embedded sigs");
+    }
+
+    printf("\n");
+    print_rule("Strings");
+    printf("%zu printable string(s) of length >= %d", strings.count, STRING_MIN_LEN);
+    size_t shown = strings.count;
+    if (shown > STRING_PREVIEW_MAX) {
+        shown = STRING_PREVIEW_MAX;
+        printf(" (showing first %d)", STRING_PREVIEW_MAX);
+    }
+    printf("\n");
+    for (size_t i = 0; i < shown; i++) {
+        printf("  %8ld  %s\n", strings.items[i].offset, strings.items[i].text);
+    }
+    if (strings.count > shown) {
+        printf("  ... and %zu more\n", strings.count - shown);
+    }
+
+    printf("\n");
+    print_rule("IOCs");
+    if (iocs.count == 0) {
+        printf("none found\n");
+    } else {
+        printf("%zu IPv4 address(es), %zu URL(s)\n", n_ip, n_url);
+        size_t ioc_shown = iocs.count;
+        if (ioc_shown > IOC_PREVIEW_MAX) {
+            ioc_shown = IOC_PREVIEW_MAX;
+        }
+        for (size_t i = 0; i < ioc_shown; i++) {
+            printf("  %8ld  %-4s  %s\n", iocs.items[i].offset,
+                   ioc_kind_name(iocs.items[i].kind), iocs.items[i].text);
+        }
+        if (iocs.count > ioc_shown) {
+            printf("  ... and %zu more (showing first %d)\n",
+                   iocs.count - ioc_shown, IOC_PREVIEW_MAX);
+        }
     }
 
     // Risk summary: weigh the signals the checks above collected.
-    // Strong mismatch counts double (the file is lying about its identity);
+    // Hash match and strong mismatch count double (direct evidence);
     // everything else is circumstantial and counts once.
-    printf("\n--- Risk summary (weight of evidence) ---\n");
+    printf("\n");
+    print_rule("Risk summary (weight of evidence)");
     int score = 0;
     if (hash_match) {
         printf("  [+2] SHA-256 present in known-bad hash list\n");
         score += 2;
+    }
+    if (is_empty) {
+        printf("  [+1] Empty file: 0 bytes where content was expected\n");
+        score += 1;
     }
     if (mismatch_strong) {
         printf("  [+2] Extension mismatch: named .%s but content is %s\n",
@@ -334,14 +404,19 @@ int main(int argc, char *argv[]) {
     }
 
     const char *verdict;
+    const char *vcol;
     if (score == 0) {
         verdict = "CLEAN";
+        vcol = C_GREEN;
     } else if (score == 1) {
         verdict = "WORTH A LOOK";
+        vcol = C_YELLOW;
     } else {
         verdict = "SUSPICIOUS";
+        vcol = C_RED;
     }
-    printf("Verdict: %s (score %d)\n", verdict, score);
+    printf("\n%sVerdict: %s (score %d)%s\n", color(vcol), verdict, score,
+           color(C_RESET));
 
     free_ioc_list(&iocs);
     free_string_list(&strings);
