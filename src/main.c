@@ -6,6 +6,7 @@
 #include "entropy.h"
 #include "fileinspect.h"
 #include "filetype.h"
+#include "ioc.h"
 #include "strings.h"
 
 static void print_usage(const char *prog) {
@@ -178,6 +179,37 @@ int main(int argc, char *argv[]) {
                strings.count - shown, STRING_PREVIEW_MAX);
     }
 
+    // IOC scan (IPv4 addresses and http/https URLs inside the strings)
+    ioc_list_t iocs;
+    if (scan_iocs(&strings, &iocs) != 0) {
+        fprintf(stderr, "Error: out of memory scanning IOCs in '%s'\n", path);
+        free_string_list(&strings);
+        free(buf);
+        return 1;
+    }
+    size_t n_ip = 0, n_url = 0;
+    for (size_t i = 0; i < iocs.count; i++) {
+        if (iocs.items[i].kind == IOC_IPV4) {
+            n_ip++;
+        } else {
+            n_url++;
+        }
+    }
+    printf("IOCs: %zu IPv4 address(es), %zu URL(s)\n", n_ip, n_url);
+    size_t ioc_shown = iocs.count;
+    if (ioc_shown > IOC_PREVIEW_MAX) {
+        ioc_shown = IOC_PREVIEW_MAX;
+    }
+    for (size_t i = 0; i < ioc_shown; i++) {
+        printf("      [offset %6ld] %-4s %s\n", iocs.items[i].offset,
+               ioc_kind_name(iocs.items[i].kind), iocs.items[i].text);
+    }
+    if (iocs.count > ioc_shown) {
+        printf("      ... and %zu more (showing first %d)\n",
+               iocs.count - ioc_shown, IOC_PREVIEW_MAX);
+    }
+
+    free_ioc_list(&iocs);
     free_string_list(&strings);
     free(buf);
     return 0;

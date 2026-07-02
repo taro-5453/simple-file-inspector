@@ -11,4 +11,7 @@
 /* How many extracted strings to show before truncating the listing. */
 #define STRING_PREVIEW_MAX 10
 
+/* How many IOCs to show before truncating the listing. */
+#define IOC_PREVIEW_MAX 20
+
 #endif
