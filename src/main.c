@@ -107,8 +107,18 @@ int main(int argc, char *argv[]) {
 
     if (size == 0) {
         printf("[!] Empty file (0 bytes) - nothing to inspect.\n");
+        printf("\n--- Risk summary (weight of evidence) ---\n");
+        printf("  [+1] Empty file: 0 bytes where content was expected\n");
+        printf("Verdict: WORTH A LOOK (score 1)\n");
         return 0;
     }
+
+    // Signals collected along the way for the final risk summary
+    int mismatch_strong = 0;  /* named one known type, content is another */
+    int mismatch_soft = 0;    /* named a known type, but its signature is absent */
+    int high_entropy = 0;
+    long emb_reliable = 0;    /* embedded hits from signatures >= 3 bytes */
+    long emb_weak = 0;        /* embedded hits from 2-byte signatures (MZ/GZIP) */
 
     // Detect file type and embedded
     filetype_t type = detect_filetype(buf, size);
@@ -129,6 +139,15 @@ int main(int argc, char *argv[]) {
         printf("      Note: short 2-byte signatures (MZ, GZIP) can appear by chance;\n");
         printf("      treat these as a hint to look closer, not proof of an embedded file.\n");
     }
+    for (int t = 1; t < FT_COUNT; t++) {
+        if (emb.per_type[t].count > 0) {
+            if (filetype_sig_len((filetype_t)t) >= 3) {
+                emb_reliable += emb.per_type[t].count;
+            } else {
+                emb_weak += emb.per_type[t].count;
+            }
+        }
+    }
 
     // Extension vs content (Does the file name match what the bytes say?)
     const char *ext = file_extension(path);
@@ -139,9 +158,11 @@ int main(int argc, char *argv[]) {
         } else if (type != FT_UNKNOWN) {
             printf("[!] Extension mismatch: file is named .%s but content is %s.\n",
                    ext, filetype_name(type));
+            mismatch_strong = 1;
         } else {
             printf("[!] Extension mismatch: file is named .%s but no %s signature was found.\n",
                    ext, filetype_name(expected));
+            mismatch_soft = 1;
         }
     } else if (ext != NULL) {
         printf("Extension: .%s (no signature to expect)\n", ext);
@@ -155,6 +176,7 @@ int main(int argc, char *argv[]) {
     if (entropy > ENTROPY_HIGH_THRESHOLD) {
         printf("[!] High entropy (> %.1f) - possibly packed, compressed, or encrypted.\n",
                ENTROPY_HIGH_THRESHOLD);
+        high_entropy = 1;
     }
 
     // Printable strings (runs of ASCII >= STRING_MIN_LEN chars)
@@ -208,6 +230,53 @@ int main(int argc, char *argv[]) {
         printf("      ... and %zu more (showing first %d)\n",
                iocs.count - ioc_shown, IOC_PREVIEW_MAX);
     }
+
+    // Risk summary: weigh the signals the checks above collected.
+    // Strong mismatch counts double (the file is lying about its identity);
+    // everything else is circumstantial and counts once.
+    printf("\n--- Risk summary (weight of evidence) ---\n");
+    int score = 0;
+    if (mismatch_strong) {
+        printf("  [+2] Extension mismatch: named .%s but content is %s\n",
+               ext, filetype_name(type));
+        score += 2;
+    } else if (mismatch_soft) {
+        printf("  [+1] Extension mismatch: named .%s but no %s signature present\n",
+               ext, filetype_name(expected));
+        score += 1;
+    }
+    if (high_entropy) {
+        printf("  [+1] High entropy: %.4f bits/byte - possibly packed or encrypted\n",
+               entropy);
+        score += 1;
+    }
+    if (emb_reliable > 0) {
+        printf("  [+1] Embedded signature(s) past the header (%ld reliable hit(s))\n",
+               emb_reliable);
+        score += 1;
+    }
+    if (n_ip + n_url > 0) {
+        printf("  [+1] Network IOCs present (%zu IPv4, %zu URL)\n", n_ip, n_url);
+        score += 1;
+    }
+    if (emb_weak > 0 && emb_reliable == 0) {
+        printf("  [ 0] 2-byte signature hit(s) past the header (%ld) - possible\n",
+               emb_weak);
+        printf("       chance matches, not scored\n");
+    }
+    if (score == 0) {
+        printf("  No scored signals fired.\n");
+    }
+
+    const char *verdict;
+    if (score == 0) {
+        verdict = "CLEAN";
+    } else if (score == 1) {
+        verdict = "WORTH A LOOK";
+    } else {
+        verdict = "SUSPICIOUS";
+    }
+    printf("Verdict: %s (score %d)\n", verdict, score);
 
     free_ioc_list(&iocs);
     free_string_list(&strings);

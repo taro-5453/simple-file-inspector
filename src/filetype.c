@@ -85,6 +85,16 @@ void scan_embedded_signatures(const unsigned char *buf, long size, embedded_scan
     }
 }
 
+size_t filetype_sig_len(filetype_t type) {
+    size_t n = sizeof(SIGNATURES) / sizeof(SIGNATURES[0]);
+    for (size_t i = 0; i < n; i++) {
+        if (SIGNATURES[i].type == type) {
+            return SIGNATURES[i].len;
+        }
+    }
+    return 0;
+}
+
 const char *file_extension(const char *path) {
     if (path == NULL) {
         return NULL;

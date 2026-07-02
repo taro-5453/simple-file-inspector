@@ -1,6 +1,8 @@
 #ifndef FILETYPE_H
 #define FILETYPE_H
 
+#include <stddef.h>
+
 /* Detected file type, based on leading "magic" bytes. */
 typedef enum {
     FT_UNKNOWN = 0,
@@ -32,6 +34,11 @@ filetype_t detect_filetype(const unsigned char *buf, long size);
 
 /* Returns a human-readable name for a file type, e.g. "PE executable". */
 const char *filetype_name(filetype_t type);
+
+/* Returns the length in bytes of a type's magic signature, or 0 for
+ * FT_UNKNOWN. Short (2-byte) signatures match random data by chance far
+ * more often than longer ones, so callers can weigh hits accordingly. */
+size_t filetype_sig_len(filetype_t type);
 
 /* Scans the entire buffer for known signatures appearing at offset >= 1
  * (i.e. beyond the header) and fills *out with per-type counts and offsets.
