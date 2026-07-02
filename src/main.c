@@ -6,24 +6,34 @@
 #include "entropy.h"
 #include "fileinspect.h"
 #include "filetype.h"
+#include "hashlist.h"
 #include "ioc.h"
+#include "sha256.h"
 #include "strings.h"
 
 static void print_usage(const char *prog) {
-    fprintf(stderr, "Usage: %s <path-to-file>\n", prog);
+    fprintf(stderr, "Usage: %s [--hashlist <list-file>] <path-to-file>\n", prog);
     fprintf(stderr, "       %s --help\n", prog);
 }
 
 static void print_help(const char *prog) {
     printf("fileinspect - defensive file triage tool\n\n");
-    printf("Usage: %s <path-to-file>\n\n", prog);
+    printf("Usage: %s [--hashlist <list-file>] <path-to-file>\n\n", prog);
     printf("Inspects a single file and prints a security-focused risk summary:\n");
     printf("  - magic-byte file-type detection\n");
     printf("  - extension-vs-content mismatch\n");
     printf("  - Shannon entropy\n");
     printf("  - file size\n");
+    printf("  - SHA-256 fingerprint\n");
     printf("  - printable string extraction\n");
-    printf("  - IOC (IP/URL) scanning\n");
+    printf("  - IOC (IP/URL) scanning\n\n");
+    printf("Options:\n");
+    printf("  --hashlist <list-file>  compare the file's SHA-256 against a local\n");
+    printf("                          list of known-bad hashes (one hex hash per\n");
+    printf("                          line; '#' comments and blank lines ignored)\n");
+    printf("  -h, --help              show this help\n\n");
+    printf("The tool never touches the network; hash lookups are against the\n");
+    printf("local list file only.\n");
 }
 
 /* Reads the whole file into a heap buffer. On success, *out_buf points to a
@@ -82,19 +92,40 @@ static int read_file(const char *path, unsigned char **out_buf, long *out_size) 
 }
 
 int main(int argc, char *argv[]) {
-    // Validation
-    if (argc != 2) {
+    // Parse arguments: one input file plus optional --hashlist <file>
+    const char *path = NULL;
+    const char *hashlist_path = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+            print_help(argv[0]);
+            return 0;
+        } else if (strcmp(argv[i], "--hashlist") == 0) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "Error: --hashlist requires a file argument.\n");
+                print_usage(argv[0]);
+                return 1;
+            }
+            hashlist_path = argv[++i];
+        } else if (argv[i][0] == '-' && argv[i][1] != '\0') {
+            fprintf(stderr, "Error: unknown option '%s'.\n", argv[i]);
+            print_usage(argv[0]);
+            return 1;
+        } else if (path == NULL) {
+            path = argv[i];
+        } else {
+            fprintf(stderr, "Error: only one input file may be given.\n");
+            print_usage(argv[0]);
+            return 1;
+        }
+    }
+
+    if (path == NULL) {
         print_usage(argv[0]);
         return 1;
     }
 
-    if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
-        print_help(argv[0]);
-        return 0;
-    }
-
     // Load file into the buffer
-    const char *path = argv[1];
     unsigned char *buf = NULL;
     long size = 0;
 
@@ -105,11 +136,41 @@ int main(int argc, char *argv[]) {
     printf("File: %s\n", path);
     printf("Size: %ld bytes\n", size);
 
+    // SHA-256 fingerprint (+ optional lookup in a local known-bad list).
+    // Purely offline: the hash identifies the content; renaming the file
+    // does not change it.
+    unsigned char digest[SHA256_DIGEST_LEN];
+    char hex[SHA256_HEX_LEN + 1];
+    sha256(buf, (size_t)size, digest);
+    sha256_hex(digest, hex);
+    printf("SHA-256: %s\n", hex);
+
+    int hash_match = 0;
+    if (hashlist_path != NULL) {
+        int r = hashlist_contains(hashlist_path, hex);
+        if (r < 0) {
+            free(buf);
+            return 1;
+        }
+        if (r == 1) {
+            printf("[!] SHA-256 found in known-bad hash list (%s).\n", hashlist_path);
+            hash_match = 1;
+        } else {
+            printf("SHA-256 not present in local hash list.\n");
+        }
+    }
+
     if (size == 0) {
         printf("[!] Empty file (0 bytes) - nothing to inspect.\n");
         printf("\n--- Risk summary (weight of evidence) ---\n");
+        int empty_score = 1;
         printf("  [+1] Empty file: 0 bytes where content was expected\n");
-        printf("Verdict: WORTH A LOOK (score 1)\n");
+        if (hash_match) {
+            printf("  [+2] SHA-256 present in known-bad hash list\n");
+            empty_score += 2;
+        }
+        printf("Verdict: %s (score %d)\n",
+               empty_score >= 2 ? "SUSPICIOUS" : "WORTH A LOOK", empty_score);
         return 0;
     }
 
@@ -236,6 +297,10 @@ int main(int argc, char *argv[]) {
     // everything else is circumstantial and counts once.
     printf("\n--- Risk summary (weight of evidence) ---\n");
     int score = 0;
+    if (hash_match) {
+        printf("  [+2] SHA-256 present in known-bad hash list\n");
+        score += 2;
+    }
     if (mismatch_strong) {
         printf("  [+2] Extension mismatch: named .%s but content is %s\n",
                ext, filetype_name(type));
