@@ -6,6 +6,7 @@
 #include "entropy.h"
 #include "fileinspect.h"
 #include "filetype.h"
+#include "strings.h"
 
 static void print_usage(const char *prog) {
     fprintf(stderr, "Usage: %s <path-to-file>\n", prog);
@@ -155,6 +156,29 @@ int main(int argc, char *argv[]) {
                ENTROPY_HIGH_THRESHOLD);
     }
 
+    // Printable strings (runs of ASCII >= STRING_MIN_LEN chars)
+    string_list_t strings;
+    if (extract_strings(buf, size, STRING_MIN_LEN, &strings) != 0) {
+        fprintf(stderr, "Error: out of memory extracting strings from '%s'\n", path);
+        free(buf);
+        return 1;
+    }
+    printf("Strings: %zu printable string(s) of length >= %d\n",
+           strings.count, STRING_MIN_LEN);
+    size_t shown = strings.count;
+    if (shown > STRING_PREVIEW_MAX) {
+        shown = STRING_PREVIEW_MAX;
+    }
+    for (size_t i = 0; i < shown; i++) {
+        printf("      [offset %6ld] %s\n", strings.items[i].offset,
+               strings.items[i].text);
+    }
+    if (strings.count > shown) {
+        printf("      ... and %zu more (showing first %d)\n",
+               strings.count - shown, STRING_PREVIEW_MAX);
+    }
+
+    free_string_list(&strings);
     free(buf);
     return 0;
 }
