@@ -1,0 +1,3 @@
+# Demo known-bad hash list (format: <sha256 hex> <label>)
+# This is the hash of renamed-executable.jpg, our own harmless sample.
+43d31a4b43a238887930699f03e528d199981ef2f98e2afe47efcf1581d15480  Demo.FakeExecutable

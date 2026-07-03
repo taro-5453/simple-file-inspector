@@ -5,3 +5,4 @@ fileinspect.dSYM/
 *.o
 *.dSYM/
 /build
+/.claude

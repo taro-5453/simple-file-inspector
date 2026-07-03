@@ -1,0 +1,5 @@
+session log (fabricated for testing)
+connection attempt from 203.0.113.7 port 4444
+callback to https://c2.invalid.example/beacon?id=42
+secondary mirror at http://198.51.100.23:8080/payload.bin
+these must NOT be detected as IPs: 999.1.2.3, 1.2.3.4.5, ver1.2.3
