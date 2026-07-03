@@ -4,3 +4,4 @@ fileinspect.dSYM/
 .DS_Store
 *.o
 *.dSYM/
+/build

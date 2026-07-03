@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>File Inspector</title>
+<style>
+  :root {
+    --bg: #14161a;
+    --panel: #1d2026;
+    --border: #33383f;
+    --text: #d8dce2;
+    --dim: #8b929c;
+    --accent: #5cb3ff;
+    --red: #ff6b6b;
+    --yellow: #f2c94c;
+    --green: #6fcf6f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 2rem 1rem;
+  }
+  .wrap { width: 100%; max-width: 860px; }
+  h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+  .sub { color: var(--dim); font-size: .85rem; margin-bottom: 1.25rem; }
+  .sub code { color: var(--text); }
+
+  #dropzone {
+    border: 2px dashed var(--border);
+    border-radius: 10px;
+    background: var(--panel);
+    padding: 2.2rem 1rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+    user-select: none;
+  }
+  #dropzone.drag { border-color: var(--accent); background: #22303f; }
+  #dropzone .big { font-size: 1.05rem; }
+  #dropzone .hint { color: var(--dim); font-size: .8rem; margin-top: .35rem; }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    margin: .8rem 0 1.2rem;
+    font-size: .82rem;
+    color: var(--dim);
+    flex-wrap: wrap;
+  }
+  .row button {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: .3rem .7rem;
+    font-size: .8rem;
+    cursor: pointer;
+  }
+  .row button:hover { border-color: var(--accent); }
+  #hashlistName { color: var(--text); }
+
+  #report {
+    display: none;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    overflow-x: auto;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: .78rem;
+    line-height: 1.45;
+    white-space: pre;
+  }
+  .c-red { color: var(--red); font-weight: 600; }
+  .c-yellow { color: var(--yellow); }
+  .c-green { color: var(--green); }
+  .rule { color: var(--accent); font-weight: 600; }
+  footer { color: var(--dim); font-size: .75rem; margin-top: 1.5rem; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>File Inspector</h1>
+  <div class="sub">
+    Defensive file triage &mdash; the C tool compiled to WebAssembly.
+    Everything runs <b>locally in your browser</b>; no file ever leaves your machine.
+  </div>
+
+  <div id="dropzone">
+    <div class="big">Drop a file here to inspect it</div>
+    <div class="hint">or click to choose a file</div>
+  </div>
+  <input type="file" id="filepick" hidden>
+
+  <div class="row">
+    <button id="hashlistBtn" type="button">Load known-bad hash list&hellip;</button>
+    <span id="hashlistName">no hash list loaded (optional)</span>
+    <button id="hashlistClear" type="button" style="display:none">clear</button>
+  </div>
+  <input type="file" id="hashlistPick" hidden>
+
+  <pre id="report"></pre>
+
+  <footer>fileinspect &mdash; ICCS423 &middot; runs offline &middot; MIT License</footer>
+</div>
+
+<script>
+//__FILEINSPECT_JS__
+</script>
+<script>
+(function () {
+  const dropzone = document.getElementById('dropzone');
+  const filepick = document.getElementById('filepick');
+  const report = document.getElementById('report');
+  const hashlistBtn = document.getElementById('hashlistBtn');
+  const hashlistPick = document.getElementById('hashlistPick');
+  const hashlistName = document.getElementById('hashlistName');
+  const hashlistClear = document.getElementById('hashlistClear');
+
+  let hashlistFile = null;  // File object, optional
+  let lastFile = null;      // re-inspect when the hash list changes
+
+  // Translate the tool's ANSI colors (31;1 red, 33 yellow, 32 green) into
+  // spans, escape everything else, and highlight section rules.
+  function ansiToHtml(text) {
+    const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const classes = { '31;1': 'c-red', '33': 'c-yellow', '32': 'c-green' };
+    let html = '';
+    let last = 0;
+    let open = false;
+    const re = /\x1b\[([0-9;]*)m/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      html += esc(text.slice(last, m.index));
+      last = re.lastIndex;
+      if (open) { html += '</span>'; open = false; }
+      const cls = classes[m[1]];
+      if (cls) { html += '<span class="' + cls + '">'; open = true; }
+    }
+    html += esc(text.slice(last));
+    if (open) html += '</span>';
+    // Section rules ("---- Identity ----...") get their own style.
+    return html.split('\n')
+      .map(l => l.startsWith('---- ') ? '<span class="rule">' + l + '</span>' : l)
+      .join('\n');
+  }
+
+  function showError(context, e) {
+    report.style.display = 'block';
+    report.innerHTML = '<span class="c-red">Error (' + context + '): ' +
+      String(e && e.message ? e.message : e)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') +
+      '</span>';
+  }
+
+  async function inspect(file) {
+    lastFile = file;
+    report.style.display = 'block';
+    report.textContent = 'Inspecting ' + file.name + ' ...';
+
+    try {
+      const lines = [];
+      // Fresh module per run: clean filesystem and state every time.
+      const mod = await createFileInspect({
+        print: s => lines.push(s),
+        printErr: s => lines.push(s),
+      });
+
+      // Keep the real file name (sanitized) so the extension check sees it.
+      const name = (file.name || 'dropped.bin').replace(/[^A-Za-z0-9._-]/g, '_');
+      mod.FS.writeFile('/' + name, new Uint8Array(await file.arrayBuffer()));
+
+      const args = [];
+      if (hashlistFile) {
+        mod.FS.writeFile('/hashlist.txt', new Uint8Array(await hashlistFile.arrayBuffer()));
+        args.push('--hashlist', '/hashlist.txt');
+      }
+      args.push('/' + name);
+
+      try {
+        mod.callMain(args);
+      } catch (e) {
+        // callMain throws ExitStatus on non-zero exit; output is captured.
+      }
+      report.innerHTML = ansiToHtml(lines.join('\n'));
+    } catch (e) {
+      // Surface failures (e.g. WASM startup) instead of hanging silently.
+      showError('inspect', e);
+    }
+  }
+
+  // Make any startup/async failure visible on the page itself.
+  window.addEventListener('error', e => showError('page', e.message));
+  window.addEventListener('unhandledrejection', e => showError('async', e.reason));
+
+  // If a file is dropped outside the drop zone, the browser's default action
+  // is to navigate away to that file. Block that everywhere.
+  window.addEventListener('dragover', e => e.preventDefault());
+  window.addEventListener('drop', e => e.preventDefault());
+
+  // Drag & drop wiring
+  ['dragenter', 'dragover'].forEach(ev =>
+    dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.add('drag'); }));
+  ['dragleave', 'drop'].forEach(ev =>
+    dropzone.addEventListener(ev, e => { e.preventDefault(); dropzone.classList.remove('drag'); }));
+  dropzone.addEventListener('drop', e => {
+    const files = e.dataTransfer.files;
+    if (files.length > 1) {
+      showError('drop', 'Multiple files dropped - please drop one file at a time. ' +
+        'Only inspecting the first: ' + files[0].name);
+      setTimeout(() => inspect(files[0]), 1200);
+      return;
+    }
+    if (files.length === 1) {
+      inspect(files[0]);
+    } else {
+      // Some drags (e.g. from another browser window) carry no File objects.
+      showError('drop', 'Nothing usable was dropped - drag a file from your ' +
+        'file manager, or click the box to choose one.');
+    }
+  });
+  dropzone.addEventListener('click', () => filepick.click());
+  filepick.addEventListener('change', () => {
+    if (filepick.files.length > 0) inspect(filepick.files[0]);
+    filepick.value = '';
+  });
+
+  // Optional hash list
+  hashlistBtn.addEventListener('click', () => hashlistPick.click());
+  hashlistPick.addEventListener('change', () => {
+    if (hashlistPick.files.length > 0) {
+      hashlistFile = hashlistPick.files[0];
+      hashlistName.textContent = hashlistFile.name;
+      hashlistClear.style.display = '';
+      if (lastFile) inspect(lastFile);
+    }
+    hashlistPick.value = '';
+  });
+  hashlistClear.addEventListener('click', () => {
+    hashlistFile = null;
+    hashlistName.textContent = 'no hash list loaded (optional)';
+    hashlistClear.style.display = 'none';
+    if (lastFile) inspect(lastFile);
+  });
+})();
+</script>
+</body>
+</html>
